@@ -191,7 +191,8 @@ impl fmt::Display for C4Cell {
 
 #[derive(Clone)]
 struct C4State {
-    board: [C4Cell; 42],
+    xs: u64,
+    os: u64,
     next: Player,
 }
 
@@ -215,16 +216,19 @@ impl fmt::Display for C4State {
 
 impl C4State {
     fn get(&self, row: u8, col: u8) -> C4Cell {
-        self.board[(row * 7 + col) as usize]
-    }
-    fn piece(p: Player) -> C4Cell {
-        match p {
-            Player::P1 => C4Cell::X,
-            Player::P2 => C4Cell::O,
+        if ((self.os >> (row * 7 + col)) & 1) == 1 {
+            C4Cell::O
+        } else if ((self.xs >> (row * 7 + col)) & 1) == 1 {
+            C4Cell::X
+        } else {
+            C4Cell::Blank
         }
     }
     fn play(&mut self, row: u8, col: u8, player: Player) {
-        self.board[(row * 7 + col) as usize] = C4State::piece(player);
+        match player {
+            Player::P1 => self.xs |= 1 << (row * 7 + col),
+            Player::P2 => self.os |= 1 << (row * 7 + col),
+        }
     }
 }
 
@@ -233,7 +237,8 @@ impl State for C4State {
 
     fn initial() -> Self {
         C4State {
-            board: [C4Cell::Blank; 42],
+            xs: 0,
+            os: 0,
             next: Player::P1,
         }
     }
@@ -264,47 +269,50 @@ impl State for C4State {
     }
 
     fn has_won(&self, player: Player) -> bool {
-        let piece = C4State::piece(player);
         let streak = 4;
         let rows = 6;
         let cols = 7;
+        let col_win = 0b0000000_0000000_0000001_0000001_0000001_0000001;
+        let row_win = 0b0000000_0000000_0000000_0000000_0000000_0001111;
+        let d1_win = 0b0000000_0000000_0001000_0000100_0000010_0000001;
+        let d2_win = 0b0000000_0000000_0000001_0000010_0000100_0001000;
+        let board = match player {
+            Player::P1 => self.xs,
+            Player::P2 => self.os,
+        };
+
 
         // Column wins
-        for c in 0..(cols) {
-            for r in 0..(rows - streak + 1) {
-                if (0..streak).all(|i| self.get(r + i, c) == piece) {
-                    return true;
-                }
+        for s in 0..(cols * (rows - streak + 1)) {
+            let win = col_win << s;
+            if (board ^ win) & win == 0 {
+                return true;
             }
         }
 
         // Check row wins
         for r in 0..(rows) {
             for c in 0..(cols - streak + 1) {
-                if (0..streak).all(|i| self.get(r, c + i) == piece) {
+                let win = row_win << (r * 7 + c);
+                if (board ^ win) & win == 0 {
                     return true;
                 }
             }
         }
 
-        // Check for back-diagonal wins
+        // Check for diagonal wins
         for r in 0..(rows - streak + 1) {
             for c in 0..(cols - streak + 1) {
-                if (0..streak).all(|i| self.get(r + i, c + i) == piece) {
+                let win = d1_win << (r * 7 + c);
+                if (board ^ win) & win == 0 {
+                    return true;
+                }
+                let win = d2_win << (r * 7 + c);
+                if (board ^ win) & win == 0 {
                     return true;
                 }
             }
         }
-
-        // Check for forward-diagonal wins
-        for r in (streak - 1)..rows {
-            for c in 0..(cols - streak + 1) {
-                if (0..streak).all(|i| self.get(r - i, c + i) == piece) {
-                    return true;
-                }
-            }
-        }
-
         false
     }
 }
@@ -431,4 +439,7 @@ fn mcts(thinking_time: usize) {
 fn main() {
     let thinking_time = env::args().nth(1).and_then(|a| usize::from_str(&a).ok()).unwrap_or(3000);
     mcts(thinking_time)
+}
+
+mod tests {
 }
