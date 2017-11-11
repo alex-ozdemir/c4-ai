@@ -317,15 +317,15 @@ struct MCTree<S: State, R: Rng> {
 }
 
 impl<S: State> MCTree<S, rand::ThreadRng> {
-    fn search_for(&mut self, seconds: usize) {
+    fn search_for(&mut self, milliseconds: usize) {
         let start = time::Instant::now();
-        let duration = time::Duration::new(seconds as u64, 0);
+        let duration = time::Duration::from_millis(milliseconds as u64);
         let mut searches = 0;
         while start.elapsed() < duration {
             searches += 1;
             self.iter();
         }
-        println!("Did {} searches in {} seconds", searches, seconds);
+        println!("Did {} searches in {} milliseconds", searches, milliseconds);
     }
     fn iter(&mut self) {
         self.root.select(
@@ -429,6 +429,6 @@ fn mcts(thinking_time: usize) {
 }
 
 fn main() {
-    let thinking_time = env::args().nth(1).and_then(|a| usize::from_str(&a).ok()).unwrap_or(3);
+    let thinking_time = env::args().nth(1).and_then(|a| usize::from_str(&a).ok()).unwrap_or(3000);
     mcts(thinking_time)
 }
