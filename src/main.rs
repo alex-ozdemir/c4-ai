@@ -16,7 +16,7 @@ struct Node<S: State> {
     action: Option<S::Action>,
     visits: usize,
     value: f64,
-    untried_actions: Vec<S::Action>,
+    untried_actions: S::Actions,
     children: Vec<Node<S>>,
     just_acted: Player,
 }
@@ -29,7 +29,7 @@ impl<S: State> Node<S> {
     /// Returns the value of the result
     fn select<R: Rng>(&mut self, mut state: S, rng: &mut R, player: Player) -> f64 {
         self.action.map(|a| state.do_action(a));
-        match self.untried_actions.pop() {
+        match self.untried_actions.next() {
             None => {
                 if self.children.len() == 0 {
                     self.visits += 1;
@@ -44,11 +44,12 @@ impl<S: State> Node<S> {
                 }
             }
             Some(action) => {
-                state.do_action(action);
+                let outcome = state.do_action(action);
                 self.children.push(Node::new(
                     Some(action),
                     self.just_acted.other(),
                     state,
+                    outcome,
                     player,
                     rng,
                 ));
@@ -77,16 +78,16 @@ impl<S: State> Node<S> {
         action: Option<S::Action>,
         just_acted: Player,
         mut state: S,
+        outcome: Outcome<S::Actions>,
         perspective: Player,
         rng: &mut R,
     ) -> Node<S> {
-        let actions = state.valid_actions(just_acted.other());
-        let value = state.playout(rng, perspective);
+        let value = state.playout(rng, perspective, outcome.clone());
         Node {
             action,
             visits: 1,
             value,
-            untried_actions: actions,
+            untried_actions: outcome.as_actions(),
             children: Vec::new(),
             just_acted,
         }
@@ -140,30 +141,66 @@ impl Player {
     }
 }
 
-trait State: Clone {
-    type Action: Copy + Eq + fmt::Debug;
-    fn initial() -> Self;
-    fn do_action(&mut self, action: Self::Action);
-    fn next_player(&self) -> Player;
-    fn valid_actions(&self, player: Player) -> Vec<Self::Action>;
+#[derive(Clone)]
+enum Outcome<Actions: Clone> {
+    P1Win,
+    P2Win,
+    Draw,
+    Actions(Actions),
+}
+
+impl<Actions: Default + Clone> Outcome<Actions> {
     fn value(&self, player: Player) -> f64 {
-        if self.has_won(player) {
-            1.0
-        } else if self.has_won(player.other()) {
-            0.0
-        } else {
-            0.5
+        match (self, player) {
+            (&Outcome::P1Win, Player::P1) => 1.0,
+            (&Outcome::P1Win, Player::P2) => 0.0,
+            (&Outcome::P2Win, Player::P1) => 0.0,
+            (&Outcome::P2Win, Player::P2) => 1.0,
+            _ => 0.5,
         }
     }
+    fn from_player(player: Player) -> Self {
+        match player {
+            Player::P1 => Outcome::P1Win,
+            Player::P2 => Outcome::P2Win,
+        }
+    }
+    fn as_actions(self) -> Actions {
+        match self {
+            Outcome::Actions(actions) => actions,
+            _ => Actions::default(),
+        }
+    }
+}
+
+trait State: Clone + fmt::Display {
+    type Action: Copy + Eq + fmt::Debug;
+    type Actions: ExactSizeIterator + Iterator<Item=Self::Action> + Clone + Default + fmt::Debug;
+    fn initial() -> Self;
+    fn do_action(&mut self, action: Self::Action) -> Outcome<Self::Actions>;
+    fn next_player(&self) -> Player;
+    fn valid_actions(&self, player: Player) -> Self::Actions;
     fn has_won(&self, player: Player) -> bool;
-    fn playout<R: Rng>(&mut self, rng: &mut R, player: Player) -> f64 {
-        loop {
+    fn outcome(&self) -> Outcome<Self::Actions> {
+        return if self.has_won(Player::P1) {
+            Outcome::P1Win
+        } else if self.has_won(Player::P2) {
+            Outcome::P2Win
+        } else {
             let actions = self.valid_actions(self.next_player());
-            if actions.len() == 0 {
-                return self.value(player);
-            }
+            if actions.len() == 0 { Outcome::Draw } else { Outcome::Actions(actions) }
+        }
+    }
+    fn playout<R: Rng>(&mut self, rng: &mut R, player: Player, mut outcome: Outcome<Self::Actions>) -> f64 {
+        loop {
+            let mut actions = if let Outcome::Actions(a) = outcome {
+                a
+            } else {
+                return outcome.value(player);
+            };
             let range = Range::new(0, actions.len());
-            self.do_action(actions[range.ind_sample(rng)])
+            let action = actions.nth(range.ind_sample(rng)).unwrap();
+            outcome = self.do_action(action);
         }
     }
 }
@@ -200,10 +237,9 @@ impl fmt::Display for C4State {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for r in 0..6 {
             write!(f, "|")?;
-            for c in 0..7 {
-                if c != 0 {
-                    write!(f, " ")?;
-                }
+            write!(f, "{}", self.get(r, 0))?;
+            for c in 1..7 {
+                write!(f, " ")?;
                 write!(f, "{}", self.get(r, c))?;
             }
             writeln!(f, "|")?;
@@ -230,10 +266,14 @@ impl C4State {
             Player::P2 => self.os |= 1 << (row * 7 + col),
         }
     }
+    fn full(&self) -> bool {
+        (self.xs | self.os).count_ones() == 42
+    }
 }
 
 impl State for C4State {
     type Action = u8;
+    type Actions = C4Actions;
 
     fn initial() -> Self {
         C4State {
@@ -247,25 +287,32 @@ impl State for C4State {
         self.next
     }
 
-    fn do_action(&mut self, col: Self::Action) {
+    fn do_action(&mut self, col: Self::Action) -> Outcome<Self::Actions> {
         for row in (0..6).rev() {
             if self.get(row, col) == C4Cell::Blank {
                 let player = self.next;
                 self.play(row, col, player);
                 self.next = self.next.other();
-                break;
+                return if self.has_won(player) {
+                    Outcome::from_player(player)
+                } else if self.full() {
+                    Outcome::Draw
+                }else {
+                    Outcome::Actions(self.valid_actions(self.next))
+                };
             }
         }
+        Outcome::Draw
     }
 
-    fn valid_actions(&self, _: Player) -> Vec<Self::Action> {
+    fn valid_actions(&self, _: Player) -> Self::Actions {
+        let mut bitvec = 0;
         if !self.has_won(Player::P1) && !self.has_won(Player::P2) {
-            (0..7)
-                .filter(|col| self.get(0, *col) == C4Cell::Blank)
-                .collect()
-        } else {
-            Vec::new()
+            for i in (0..7).filter(|col| self.get(0, *col) == C4Cell::Blank) {
+                bitvec |= 1u8 << i;
+            }
         }
+        C4Actions { bitvec }
     }
 
     fn has_won(&self, player: Player) -> bool {
@@ -317,6 +364,42 @@ impl State for C4State {
     }
 }
 
+#[derive(Clone)]
+struct C4Actions {
+    bitvec: u8,
+}
+
+impl fmt::Debug for C4Actions {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{:07b}", self.bitvec)
+    }
+}
+
+impl Default for C4Actions {
+    fn default() -> Self {
+        C4Actions { bitvec: 0 }
+    }
+}
+
+impl Iterator for C4Actions {
+    type Item = u8;
+    fn next(&mut self) -> Option<Self::Item> {
+        let ans = self.bitvec.trailing_zeros() as u8;
+        if ans < 7 {
+            self.bitvec &= !(1u8 << ans);
+            Some(ans)
+        } else {
+            None
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let ones: usize = self.bitvec.count_ones() as usize;
+        (ones, Some(ones))
+    }
+}
+
+impl ExactSizeIterator for C4Actions {}
+
 struct MCTree<S: State, R: Rng> {
     root: Node<S>,
     state: S,
@@ -361,7 +444,7 @@ impl<S: State> MCTree<S, rand::ThreadRng> {
     fn new(state: S, perspective: Player, to_move: Player) -> Self {
         let mut rng = rand::thread_rng();
         MCTree {
-            root: Node::new(None, to_move.other(), state.clone(), perspective, &mut rng),
+            root: Node::new(None, to_move.other(), state.clone(), state.outcome(), perspective, &mut rng),
             state,
             rng,
             perspective,
@@ -437,9 +520,11 @@ fn mcts(thinking_time: usize) {
 }
 
 fn main() {
-    let thinking_time = env::args().nth(1).and_then(|a| usize::from_str(&a).ok()).unwrap_or(3000);
+    let thinking_time = env::args()
+        .nth(1)
+        .and_then(|a| usize::from_str(&a).ok())
+        .unwrap_or(3000);
     mcts(thinking_time)
 }
 
-mod tests {
-}
+mod tests {}
