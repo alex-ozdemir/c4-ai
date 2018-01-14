@@ -1,0 +1,7 @@
+[package]
+name = "tictac4"
+version = "0.1.0"
+authors = ["Alex Ozdemir <aozdemir@hmc.edu>"]
+
+[dependencies]
+mcts = { path = "../mcts" }
